@@ -13,7 +13,8 @@ const BASE_SYSTEM_PROMPT = `Ты умный и дружелюбный ИИ-ас�
 Ты помогаешь с любыми вопросами: ответы на вопросы, написание текстов, анализ, советы, программирование и многое другое.
 Будь краток и по делу, но развёрнуто когда это нужно.
 Когда пользователь спрашивает о текущих событиях, ценах, погоде, новостях или любой актуальной информации — используй инструмент web_search.
-Когда нужно прочитать конкретную веб-страницу — используй инструмент read_page.`;
+Когда нужно прочитать конкретную веб-страницу — используй инструмент read_page.
+ВАЖНО: никогда не пиши в ответе текст вида <function=...> или JSON вызовы инструментов — только используй их через API.`;
 
 const TOOLS: Groq.Chat.CompletionCreateParams.Tool[] = [
   {
@@ -56,17 +57,36 @@ const TOOLS: Groq.Chat.CompletionCreateParams.Tool[] = [
 async function executeTool(name: string, argsJson: string): Promise<string> {
   try {
     const args = JSON.parse(argsJson) as Record<string, string>;
-    if (name === "web_search") {
-      return await webSearch(args["query"] ?? "");
-    }
-    if (name === "read_page") {
-      return await readPage(args["url"] ?? "");
-    }
+    if (name === "web_search") return await webSearch(args["query"] ?? "");
+    if (name === "read_page") return await readPage(args["url"] ?? "");
     return "Неизвестный инструмент.";
   } catch (err) {
     logger.error({ err, name }, "Tool execution error");
     return `Ошибка выполнения инструмента: ${(err as Error).message}`;
   }
+}
+
+// Strip any leaked <function=...>{...}</function> or <function=...{...}> patterns the model emits as text
+function cleanLeakedToolCalls(text: string): { cleaned: string; leakedCalls: Array<{ name: string; args: string }> } {
+  const leakedCalls: Array<{ name: string; args: string }> = [];
+
+  // Pattern 1: <function=name{"key":"val"}></function>
+  const re1 = /<function=(\w+)(\{.*?\})<\/function>/gs;
+  // Pattern 2: <function=name{"key":"val"}> (no closing tag)
+  const re2 = /<function=(\w+)(\{.*?\})>/gs;
+
+  let cleaned = text;
+  for (const re of [re1, re2]) {
+    cleaned = cleaned.replace(re, (_match, name: string, args: string) => {
+      leakedCalls.push({ name, args });
+      return "";
+    });
+  }
+
+  // Remove any leftover empty <function...> tags
+  cleaned = cleaned.replace(/<\/?function[^>]*>/g, "").trim();
+
+  return { cleaned, leakedCalls };
 }
 
 export async function getAIResponse(
@@ -84,9 +104,10 @@ export async function getAIResponse(
   ];
 
   let usedSearch = false;
+  const MAX_ITERATIONS = 5;
+  let iterations = 0;
 
   try {
-    // First pass — may call tools
     let response = await groq.chat.completions.create({
       model: "llama-3.3-70b-versatile",
       messages,
@@ -98,21 +119,21 @@ export async function getAIResponse(
 
     let choice = response.choices[0];
 
-    // Agentic loop — handle tool calls
-    while (choice?.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {
+    // Agentic loop — handle proper tool_calls
+    while (
+      choice?.finish_reason === "tool_calls" &&
+      choice.message.tool_calls?.length &&
+      iterations < MAX_ITERATIONS
+    ) {
+      iterations++;
       usedSearch = true;
       messages.push(choice.message);
 
       const toolResults: Groq.Chat.ChatCompletionToolMessageParam[] = [];
       for (const call of choice.message.tool_calls) {
         const result = await executeTool(call.function.name, call.function.arguments);
-        toolResults.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: result,
-        });
+        toolResults.push({ role: "tool", tool_call_id: call.id, content: result });
       }
-
       messages.push(...toolResults);
 
       response = await groq.chat.completions.create({
@@ -127,8 +148,53 @@ export async function getAIResponse(
       choice = response.choices[0];
     }
 
-    const text = choice?.message?.content ?? "Извините, не удалось получить ответ.";
-    return { text, usedSearch };
+    const rawText = choice?.message?.content ?? "Извините, не удалось получить ответ.";
+
+    // Handle leaked text-based tool calls (model bug fallback)
+    const { cleaned, leakedCalls } = cleanLeakedToolCalls(rawText);
+
+    if (leakedCalls.length > 0 && iterations < MAX_ITERATIONS) {
+      logger.warn({ leakedCalls }, "Model leaked tool calls as text — executing them");
+      usedSearch = true;
+
+      const syntheticToolCallId = `leaked_${Date.now()}`;
+      messages.push({
+        role: "assistant",
+        content: null,
+        tool_calls: leakedCalls.map((lc, i) => ({
+          id: `${syntheticToolCallId}_${i}`,
+          type: "function" as const,
+          function: { name: lc.name, arguments: lc.args },
+        })),
+      });
+
+      const toolResults: Groq.Chat.ChatCompletionToolMessageParam[] = [];
+      for (let i = 0; i < leakedCalls.length; i++) {
+        const lc = leakedCalls[i]!;
+        const result = await executeTool(lc.name, lc.args);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: `${syntheticToolCallId}_${i}`,
+          content: result,
+        });
+      }
+      messages.push(...toolResults);
+
+      const finalResponse = await groq.chat.completions.create({
+        model: "llama-3.3-70b-versatile",
+        messages,
+        tools: TOOLS,
+        tool_choice: "none", // Force plain text answer now
+        max_tokens: 1024,
+        temperature: 0.7,
+      });
+
+      const finalText = finalResponse.choices[0]?.message?.content ?? cleaned;
+      const { cleaned: finalCleaned } = cleanLeakedToolCalls(finalText);
+      return { text: finalCleaned || cleaned || "Извините, не удалось получить ответ.", usedSearch };
+    }
+
+    return { text: cleaned || "Извините, не удалось получить ответ.", usedSearch };
   } catch (err) {
     logger.error({ err }, "Groq API error");
     throw new Error("Ошибка при обращении к ИИ");
