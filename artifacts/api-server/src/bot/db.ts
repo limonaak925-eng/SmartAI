@@ -66,7 +66,7 @@ export async function upsertUser(
   username: string | undefined,
   firstName: string,
   lastName: string | undefined,
-  languageCode: string | undefined
+  _languageCode: string | undefined
 ): Promise<void> {
   const { error } = await supabase.from("bot_users").upsert(
     {
@@ -74,12 +74,11 @@ export async function upsertUser(
       username: username ?? null,
       first_name: firstName,
       last_name: lastName ?? null,
-      language_code: languageCode ?? null,
       last_seen: new Date().toISOString(),
     },
     { onConflict: "telegram_id" }
   );
-  if (error) logger.error({ err: error }, "upsertUser failed");
+  if (error) logger.warn({ err: error }, "upsertUser failed (non-fatal)");
 }
 
 export async function incrementUserMessageCount(telegramId: number): Promise<void> {
