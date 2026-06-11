@@ -1,7 +1,7 @@
 import Groq from "groq-sdk";
 import { logger } from "../lib/logger.js";
 import { webSearch, readPage } from "./search.js";
-import { formatMemoriesForPrompt, type Memory } from "./memory.js";
+import { formatMemoriesForPrompt, type Memory } from "./db.js";
 
 const groqApiKey = process.env["GROQ_API_KEY"];
 if (!groqApiKey) throw new Error("GROQ_API_KEY is required");
