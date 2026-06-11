@@ -132,18 +132,20 @@ bot.on("message:text", async (ctx) => {
       logger.error({ err }, "Background memory extraction failed")
     );
 
-    await ctx.api.editMessageText(
-      ctx.chat.id,
-      thinking.message_id,
-      prefix + response
-    );
+    const finalText = prefix + response;
+    try {
+      await ctx.api.editMessageText(ctx.chat.id, thinking.message_id, finalText);
+    } catch {
+      // Edit failed (e.g. message too old or special chars) — send as new message
+      await ctx.reply(finalText);
+    }
   } catch (err) {
     logger.error({ err }, "Error handling message");
-    await ctx.api.editMessageText(
-      ctx.chat.id,
-      thinking.message_id,
-      "❌ Произошла ошибка. Попробуйте ещё раз."
-    );
+    try {
+      await ctx.api.editMessageText(ctx.chat.id, thinking.message_id, "❌ Произошла ошибка. Попробуйте ещё раз.");
+    } catch {
+      await ctx.reply("❌ Произошла ошибка. Попробуйте ещё раз.");
+    }
   }
 });
 
