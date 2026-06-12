@@ -159,6 +159,7 @@ export async function saveMessage(
   hasSearch = false
 ): Promise<void> {
   const wordCount = content.trim().split(/\s+/).length;
+  // Try full insert first; if schema cache is stale, fall back to basic columns
   const { error } = await supabase.from("bot_messages").insert({
     telegram_id: telegramId,
     session_id: sessionId || null,
@@ -168,7 +169,16 @@ export async function saveMessage(
     has_search: hasSearch,
     created_at: new Date().toISOString(),
   });
-  if (error) logger.warn({ err: error }, "saveMessage failed (non-fatal)");
+  if (error) {
+    logger.warn({ code: error.code }, "saveMessage full insert failed, trying basic");
+    const { error: e2 } = await supabase.from("bot_messages").insert({
+      telegram_id: telegramId,
+      role,
+      content,
+      created_at: new Date().toISOString(),
+    });
+    if (e2) logger.warn({ err: e2 }, "saveMessage basic insert also failed");
+  }
 }
 
 export async function getHistory(
@@ -248,11 +258,12 @@ export interface UserAnalytics {
 export async function getUserAnalytics(telegramId: number): Promise<UserAnalytics> {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
-  const [user, recentMsgs, allMsgs] = await Promise.all([
+  const [user, recentMsgs, allMsgs, totalCountRes, sessionCountRes] = await Promise.all([
     getUser(telegramId),
+    // Basic columns only — works even with stale schema cache
     supabase
       .from("bot_messages")
-      .select("content, created_at, has_search, word_count")
+      .select("content, created_at")
       .eq("telegram_id", telegramId)
       .eq("role", "user")
       .order("created_at", { ascending: false })
@@ -263,6 +274,17 @@ export async function getUserAnalytics(telegramId: number): Promise<UserAnalytic
       .eq("telegram_id", telegramId)
       .eq("role", "user")
       .gte("created_at", thirtyDaysAgo),
+    // Count ALL user messages directly — not relying on user.message_count
+    supabase
+      .from("bot_messages")
+      .select("*", { count: "exact", head: true })
+      .eq("telegram_id", telegramId)
+      .eq("role", "user"),
+    // Count sessions directly
+    supabase
+      .from("bot_sessions")
+      .select("*", { count: "exact", head: true })
+      .eq("telegram_id", telegramId),
   ]);
 
   const dailyMap: Record<string, number> = {};
@@ -285,22 +307,25 @@ export async function getUserAnalytics(telegramId: number): Promise<UserAnalytic
     .sort((a, b) => b.count - a.count)
     .slice(0, 5);
 
-  type MsgRow = { content: string; has_search: boolean; word_count: number };
+  type MsgRow = { content: string; created_at: string };
   const msgs = (recentMsgs.data ?? []) as MsgRow[];
   const recentMessages = msgs.map((m) => m.content).slice(0, 30);
-  const totalWords = msgs.reduce((sum, m) => sum + (m.word_count ?? 0), 0);
-  const searchCount = msgs.filter((m) => m.has_search).length;
+  // Estimate word count from content
+  const totalWords = msgs.reduce((sum, m) => sum + m.content.trim().split(/\s+/).length, 0);
+  // Count directly from DB, fall back to local count
+  const messageCount = totalCountRes.count ?? msgs.length;
+  const sessionCount = sessionCountRes.count ?? user?.session_count ?? 0;
 
   return {
-    messageCount: user?.message_count ?? msgs.length,
-    sessionCount: user?.session_count ?? 0,
+    messageCount,
+    sessionCount,
     firstSeen: user?.created_at ?? null,
     lastSeen: user?.last_seen ?? null,
     dailyActivity,
     hourlyActivity,
     recentMessages,
     totalWords,
-    searchCount,
+    searchCount: 0, // will be 0 until has_search column is in cache
   };
 }
 
