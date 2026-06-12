@@ -14,9 +14,10 @@ import {
 } from "./db.js";
 import { extractAndSaveMemories } from "./memory.js";
 import {
-  buildUserStatsMessage,
+  buildMISStatsReport,
+  buildWeeklyReport,
   buildGlobalStatsMessage,
-  generateUserInsights,
+  generateDecisionSupport,
 } from "./analytics.js";
 
 const token = process.env["TELEGRAM_BOT_TOKEN"];
@@ -26,7 +27,7 @@ export const bot = new Bot(token);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-async function trackUser(ctx: Context) {
+async function trackUser(ctx: Context): Promise<void> {
   if (!ctx.from) return;
   await upsertUser(
     ctx.from.id,
@@ -37,65 +38,170 @@ async function trackUser(ctx: Context) {
   );
 }
 
-async function safeEdit(ctx: Context, msgId: number, text: string) {
+async function safeEdit(ctx: Context, msgId: number, text: string): Promise<void> {
   try {
-    await ctx.api.editMessageText(ctx.chat!.id, msgId, text);
+    await ctx.api.editMessageText(ctx.chat!.id, msgId, text, { parse_mode: "Markdown" });
   } catch {
-    await ctx.reply(text);
+    try {
+      await ctx.reply(text, { parse_mode: "Markdown" });
+    } catch {
+      await ctx.reply(text);
+    }
   }
 }
 
-// ─── Commands ─────────────────────────────────────────────────────────────────
+// ─── /start ───────────────────────────────────────────────────────────────────
 
 bot.command("start", async (ctx) => {
   await trackUser(ctx);
   const name = ctx.from?.first_name ?? "друг";
   await ctx.reply(
     `👋 Привет, ${name}!\n\n` +
-    `Я ИИ-ассистент на базе Llama 3.3 с памятью и поиском в интернете.\n\n` +
-    `Команды:\n` +
-    `/help — справка\n` +
-    `/stats — твоя статистика и профиль\n` +
-    `/insights — персональные инсайты\n` +
-    `/memory — что я о тебе помню\n` +
-    `/forget — стереть память\n` +
-    `/clear — очистить историю диалога`
+    `Я SmartAI — *Management Information System* в Telegram.\n` +
+    `Анализирую твоё поведение, строю поведенческий профиль и даю рекомендации.\n\n` +
+    `*Команды:*\n` +
+    `/stats — MIS-отчёт: профиль, аналитика, тренды\n` +
+    `/weekly — недельный отчёт + сравнение с прошлой неделей\n` +
+    `/insights — Decision Support: персональные рекомендации\n` +
+    `/memory — что система знает о тебе\n` +
+    `/forget — сбросить профиль\n` +
+    `/clear — очистить историю диалога\n` +
+    `/help — подробная справка`,
+    { parse_mode: "Markdown" }
   );
 });
 
+// ─── /help ────────────────────────────────────────────────────────────────────
+
 bot.command("help", async (ctx) => {
   await ctx.reply(
-    `Как пользоваться ботом:\n\n` +
-    `Просто напиши любой вопрос — я отвечу!\n\n` +
-    `Я умею:\n` +
-    `• 🔍 Искать актуальную информацию в интернете\n` +
-    `• 🧠 Запоминать факты о тебе между сессиями\n` +
-    `• 💬 Помнить контекст текущего разговора\n` +
-    `• ✍️ Писать тексты, помогать с кодом\n` +
-    `• 🌐 Читать веб-страницы по ссылке\n` +
-    `• 📊 Показывать твою аналитику\n\n` +
-    `Команды:\n` +
-    `/stats — статистика, активность, профиль\n` +
-    `/insights — персональные инсайты на основе истории\n` +
-    `/memory — посмотреть долгосрочную память\n` +
-    `/forget — стереть всю память о тебе\n` +
-    `/clear — очистить историю текущего диалога`
+    `*SmartAI — Behavioral MIS*\n\n` +
+    `*Архитектура системы:*\n` +
+    `Telegram → Supabase → Analytics → LLM → Insights\n\n` +
+    `*Что умеет система:*\n` +
+    `• 📊 Строить поведенческий профиль\n` +
+    `• 📈 Отслеживать динамику активности\n` +
+    `• 🧠 Запоминать факты между сессиями\n` +
+    `• 💡 Давать data-driven рекомендации\n` +
+    `• 🔍 Искать актуальную информацию\n` +
+    `• 📋 Генерировать недельные MIS-отчёты\n\n` +
+    `*Команды:*\n` +
+    `/stats — полный MIS-дашборд\n` +
+    `/weekly — недельный отчёт с аналитикой\n` +
+    `/insights — Decision Support Layer\n` +
+    `/memory — долгосрочный профиль пользователя\n` +
+    `/forget — сброс профиля\n` +
+    `/clear — очистка истории диалога\n` +
+    `/globalstats — статистика всей системы`,
+    { parse_mode: "Markdown" }
   );
 });
+
+// ─── /stats — MIS Report ──────────────────────────────────────────────────────
 
 bot.command("stats", async (ctx) => {
   await trackUser(ctx);
   if (!ctx.from) return;
-  const thinking = await ctx.reply("📊 Собираю статистику...");
+  const thinking = await ctx.reply("📊 Генерирую MIS-отчёт...");
   try {
     const memories = await getMemories(ctx.from.id);
-    const text = await buildUserStatsMessage(ctx.from.id, ctx.from.first_name, memories);
+    const text = await buildMISStatsReport(ctx.from.id, ctx.from.first_name, memories);
     await safeEdit(ctx, thinking.message_id, text);
   } catch (err) {
     logger.error({ err }, "stats command failed");
-    await safeEdit(ctx, thinking.message_id, "❌ Не удалось загрузить статистику.");
+    await safeEdit(ctx, thinking.message_id, "❌ Не удалось загрузить отчёт.");
   }
 });
+
+// ─── /weekly — Weekly MIS Report ─────────────────────────────────────────────
+
+bot.command("weekly", async (ctx) => {
+  await trackUser(ctx);
+  if (!ctx.from) return;
+  const thinking = await ctx.reply("📋 Формирую недельный отчёт...");
+  try {
+    const text = await buildWeeklyReport(ctx.from.id, ctx.from.first_name);
+    await safeEdit(ctx, thinking.message_id, text);
+  } catch (err) {
+    logger.error({ err }, "weekly command failed");
+    await safeEdit(ctx, thinking.message_id, "❌ Не удалось сформировать недельный отчёт.");
+  }
+});
+
+// ─── /insights — Decision Support Layer ──────────────────────────────────────
+
+bot.command("insights", async (ctx) => {
+  await trackUser(ctx);
+  if (!ctx.from) return;
+  const thinking = await ctx.reply("💡 Запускаю Decision Support Layer...");
+  try {
+    const text = await generateDecisionSupport(ctx.from.id, ctx.from.first_name);
+    await safeEdit(ctx, thinking.message_id, text);
+  } catch (err) {
+    logger.error({ err }, "insights failed");
+    await safeEdit(ctx, thinking.message_id, "❌ Не удалось запустить анализ.");
+  }
+});
+
+// ─── /memory — User Profile ───────────────────────────────────────────────────
+
+bot.command("memory", async (ctx) => {
+  await trackUser(ctx);
+  if (!ctx.from) return;
+  const memories = await getMemories(ctx.from.id);
+  if (memories.length === 0) {
+    await ctx.reply("🧠 Профиль пуст. Пообщайся со мной — система автоматически построит твой профиль.");
+    return;
+  }
+  const categoryEmoji: Record<string, string> = {
+    profile: "👤",
+    professional: "💼",
+    interests: "🎯",
+    preferences: "⚙️",
+    goals: "🚀",
+  };
+  const categoryLabel: Record<string, string> = {
+    profile: "ПРОФИЛЬ",
+    professional: "ПРОФЕССИЯ",
+    interests: "ИНТЕРЕСЫ",
+    preferences: "ПРЕДПОЧТЕНИЯ",
+    goals: "ЦЕЛИ",
+  };
+  const grouped: Record<string, string[]> = {};
+  for (const m of memories) {
+    (grouped[m.category] ??= []).push(`• ${m.value}`);
+  }
+  const lines = Object.entries(grouped)
+    .map(([cat, items]) => `${categoryEmoji[cat] ?? "•"} *${categoryLabel[cat] ?? cat}*\n${items.join("\n")}`)
+    .join("\n\n");
+  await ctx.reply(
+    `🧠 *Поведенческий профиль*\n━━━━━━━━━━━━━━\n\n${lines}`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+// ─── /forget ──────────────────────────────────────────────────────────────────
+
+bot.command("forget", async (ctx) => {
+  await trackUser(ctx);
+  if (!ctx.from) return;
+  await clearMemories(ctx.from.id);
+  await ctx.reply("🗑 Долгосрочный профиль сброшен. Система начнёт строить его заново.");
+});
+
+// ─── /clear ───────────────────────────────────────────────────────────────────
+
+bot.command("clear", async (ctx) => {
+  await trackUser(ctx);
+  if (!ctx.from) return;
+  await clearHistory(ctx.from.id);
+  await ctx.reply(
+    "✅ История диалога очищена.\n_(Поведенческий профиль сохранён. Для сброса — /forget)_",
+    { parse_mode: "Markdown" }
+  );
+});
+
+// ─── /globalstats ─────────────────────────────────────────────────────────────
 
 bot.command("globalstats", async (ctx) => {
   const thinking = await ctx.reply("📊 Загружаю...");
@@ -108,69 +214,15 @@ bot.command("globalstats", async (ctx) => {
   }
 });
 
-bot.command("insights", async (ctx) => {
-  await trackUser(ctx);
-  if (!ctx.from) return;
-  const thinking = await ctx.reply("💡 Анализирую твою историю...");
-  try {
-    const insights = await generateUserInsights(ctx.from.id, ctx.from.first_name);
-    await safeEdit(ctx, thinking.message_id, `💡 Персональные инсайты:\n\n${insights}`);
-  } catch (err) {
-    logger.error({ err }, "insights failed");
-    await safeEdit(ctx, thinking.message_id, "❌ Не удалось сгенерировать инсайты.");
-  }
-});
-
-bot.command("memory", async (ctx) => {
-  await trackUser(ctx);
-  if (!ctx.from) return;
-  const memories = await getMemories(ctx.from.id);
-  if (memories.length === 0) {
-    await ctx.reply("🧠 Моя память о тебе пуста. Просто пообщайся — я сам запомню важное!");
-    return;
-  }
-  const grouped: Record<string, string[]> = {};
-  for (const m of memories) {
-    (grouped[m.category] ??= []).push(`• ${m.key}: ${m.value}`);
-  }
-  const categoryEmoji: Record<string, string> = {
-    profile: "👤",
-    professional: "💼",
-    interests: "🎯",
-    preferences: "⚙️",
-    goals: "🚀",
-  };
-  const lines = Object.entries(grouped)
-    .map(([cat, items]) => `${categoryEmoji[cat] ?? "•"} ${cat.toUpperCase()}\n${items.join("\n")}`)
-    .join("\n\n");
-  await ctx.reply(`🧠 Что я о тебе помню:\n\n${lines}`);
-});
-
-bot.command("forget", async (ctx) => {
-  await trackUser(ctx);
-  if (!ctx.from) return;
-  await clearMemories(ctx.from.id);
-  await ctx.reply("🗑 Долгосрочная память о тебе стёрта.");
-});
-
-bot.command("clear", async (ctx) => {
-  await trackUser(ctx);
-  if (!ctx.from) return;
-  await clearHistory(ctx.from.id);
-  await ctx.reply(
-    "✅ История диалога очищена. Начинаем заново!\n\n" +
-    "(Долгосрочная память сохранена. Для её очистки — /forget)"
-  );
-});
-
 // ─── Main message handler ─────────────────────────────────────────────────────
+// Pipeline: Telegram → Supabase (save) → Analytics (context) → LLM → Response → Supabase (save)
 
 bot.on("message:text", async (ctx) => {
   await trackUser(ctx);
   const userText = ctx.message.text;
   const userId = ctx.from.id;
 
-  const thinking = await ctx.reply("⏳ Думаю...");
+  const thinking = await ctx.reply("⏳ Обрабатываю...");
 
   try {
     const [history, memories, sessionId] = await Promise.all([
@@ -179,18 +231,18 @@ bot.on("message:text", async (ctx) => {
       getOrCreateSession(userId),
     ]);
 
-    const memoryPrompt = formatMemoriesForPrompt(memories);
+    void formatMemoriesForPrompt(memories);
+
     const { text: response, usedSearch } = await getAIResponse(history, userText, memories);
-    void memoryPrompt;
 
     await Promise.all([
       saveMessage(userId, "user", userText, sessionId, false),
       saveMessage(userId, "assistant", response, sessionId, usedSearch),
     ]);
 
-    // Background: extract memories & update message count
+    // Background: extract & save facts to user profile
     extractAndSaveMemories(userId, userText, response).catch((err) =>
-      logger.error({ err }, "extractAndSaveMemories failed")
+      logger.warn({ err }, "extractAndSaveMemories failed (non-fatal)")
     );
 
     const prefix = usedSearch ? "🔍 " : "";
@@ -207,15 +259,14 @@ bot.catch((err) => {
   logger.error({ err: err.error }, "grammY bot error");
 });
 
-// ─── Resilient start with auto-restart ───────────────────────────────────────
+// ─── Resilient start with auto-restart ────────────────────────────────────────
 
 export async function startBot(): Promise<void> {
   const tablesOk = await checkTablesExist();
   if (!tablesOk) {
-    logger.warn("Supabase tables missing — run supabase-setup.sql. Bot starts without DB.");
+    logger.warn("Supabase tables not ready — bot starts without DB persistence");
   }
 
-  // Catch any unhandled errors to prevent process crash
   process.on("uncaughtException", (err) => {
     logger.error({ err }, "Uncaught exception — bot continues");
   });
@@ -223,7 +274,7 @@ export async function startBot(): Promise<void> {
     logger.error({ reason }, "Unhandled rejection — bot continues");
   });
 
-  async function launchWithRetry(attempt = 1) {
+  async function launchWithRetry(attempt = 1): Promise<void> {
     try {
       await bot.start({
         allowed_updates: ["message", "callback_query"],
@@ -232,9 +283,9 @@ export async function startBot(): Promise<void> {
     } catch (err) {
       const delay = Math.min(attempt * 5000, 60000);
       logger.error({ err, attempt, delay }, "Bot crashed — restarting");
-      setTimeout(() => launchWithRetry(attempt + 1), delay);
+      setTimeout(() => void launchWithRetry(attempt + 1), delay);
     }
   }
 
-  launchWithRetry();
+  void launchWithRetry();
 }
