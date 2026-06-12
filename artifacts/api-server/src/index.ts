@@ -22,7 +22,15 @@ app.listen(port, (err) => {
   startKeepalive(port);
 });
 
-startBot();
+// Only start bot polling in production (Render sets RENDER=true automatically).
+// This prevents 409 conflicts when Replit and Render run simultaneously.
+// To run locally, set BOT_POLLING=true in your environment.
+if (process.env["RENDER"] === "true" || process.env["BOT_POLLING"] === "true") {
+  startBot();
+  logger.info("Bot polling started (production mode)");
+} else {
+  logger.info("Bot polling DISABLED on dev — Render handles polling. Set BOT_POLLING=true to enable locally.");
+}
 
 // ─── Keepalive ping for Render free tier ─────────────────────────────────────
 // Render spins down free Web Services after 15 min of inactivity.
