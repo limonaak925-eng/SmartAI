@@ -278,9 +278,16 @@ export async function startBot(): Promise<void> {
     try {
       await bot.start({
         allowed_updates: ["message", "callback_query"],
+        drop_pending_updates: true,
         onStart: (info) => logger.info({ username: info.username }, "Telegram bot started"),
       });
     } catch (err) {
+      const grammyErr = err as { error_code?: number; message?: string };
+      // 409 = another instance is already running — don't retry, let that one win
+      if (grammyErr.error_code === 409) {
+        logger.warn("Bot conflict (409) — another instance is running. This instance will not poll.");
+        return;
+      }
       const delay = Math.min(attempt * 5000, 60000);
       logger.error({ err, attempt, delay }, "Bot crashed — restarting");
       setTimeout(() => void launchWithRetry(attempt + 1), delay);
